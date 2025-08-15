@@ -1,47 +1,63 @@
 from celery import Celery
 import time
 import redis
-
-import fitz
+from PyPDF2 import PdfReader
+import io
+from celery.backends.redis import RedisBackend
 
 redis_client = redis.Redis(host="localhost", port=6379, decode_responses=True)
+
+
+class HsetRedisBackend(RedisBackend):
+    def __init__(self, app, url=None, **kwargs):
+        super().__init__(app, url, **kwargs)
+
+    def _store_result(
+        self, task_id, result, status, traceback=None, request=None, **kwargs
+    ):
+        mapping = {
+            "status": status,
+            "taskId": kwargs["taskId"],
+            **(result if isinstance(result, dict) else {"result": result}),
+        }
+
+        # json.dumps(result) will fail if result contains raw datetime objects — in your case, you’re using time.time() floats,
+        # also doing json dumps will convert python dict or object to object string / single string like object. as redis doesnt supports object storage directly in hashes data it supports string only
+        self.redis_client.hset(f"TaskId-{task_id}", mapping=mapping)
+
+
 app = Celery(
     "task",
     broker="amqp://guest:guest@localhost:5672//",
-    backend="redis://localhost:6379/0",
+    backend="tasks.HsetRedisBackend",
 )
+app.conf.result_backend = "redis://localhost:6379/0"
 
 
-@app.task(bind=True)
-def process_pdf(self, file_path):
-    task_id = self.request.id
-    queued_at = redis_client.hget(task_id, "Queued At")
+@app.task()
+def process_pdf(file, taskId):
+    print(taskId)
+    queued_at = redis_client.hget(taskId, "Queued At")
+
     if not queued_at:
-        redis_client.hset(task_id, "Queeud At", time.time())
-    else:
-        queued_at = int(queued_at)
+        queued_at = time.time()
+    started_at = time.time()  # Start Time
 
-    started_at = int(time.time())
-    redis_client.hset(task_id, "Started At", time.time())
+    wait_time = started_at - queued_at  # Wait Time
 
-    wait_time = started_at - queued_at
-    redis_client.hset(task_id, "Wait Time", wait_time)
+    process_start_time = time.time()  # Process  Start Time
 
-    process_start_time = time.time()
+    total_pages = len(PdfReader(io.BytesIO(file)).pages)
 
-    doc = fitz.open(file_path)
-    total_pages = len(doc)
-    doc.close()
-
-    process_end_time = int(time.time())
-    redis_client.hset(task_id, "Processing End Time", process_end_time)
-    redis_client.hset(task_id, "Total Pages ", total_pages)
-    processing_time = round(process_end_time - process_start_time, 3)
-    redis_client.hset(task_id, "Total Processing Time", processing_time)
+    process_end_time = time.time()  # Process End Time
+    processing_time = process_end_time - process_start_time
     return {
-        "task_id": task_id,
-        "file_path": file_path,
-        "wait_time": wait_time,
-        "processing_time": processing_time,
-        "total_pages": total_pages,
+        "Queued At": queued_at,
+        "Started At": started_at,
+        "Wait Time": wait_time,
+        "Processing Start Time": process_start_time,
+        "Processing End Time": process_end_time,
+        "Total Pages": total_pages,
+        "Total Processing Time": f"{processing_time:.3f} Seconds",
+        "taskId": taskId,
     }

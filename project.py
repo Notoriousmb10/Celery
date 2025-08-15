@@ -1,8 +1,8 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
-import shutil
 import os
 from tasks import process_pdf
+import uuid
 
 UPLOADS_FOLDER = "Uploads"
 os.makedirs(UPLOADS_FOLDER, exist_ok=True)
@@ -17,14 +17,9 @@ async def upload_file(file: UploadFile = File(...)):
         return JSONResponse(
             content={"error": "Only Pdf files are allowed."}, status_code=400
         )
-    # Prevent path traversal and save using the base name only
-    safe_name = os.path.basename(file.filename)
-    file_path = os.path.join(
-        UPLOADS_FOLDER, safe_name
-    )  # join folder name and filename eg /uploads/yash.pdf
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    taskId = str(uuid.uuid4())
+    content = await file.read()
+    print("file read")
+    process_pdf.apply_async(args=[content, taskId], queue="file-processing")
 
-    task = process_pdf.delay(file_path)
-
-    return {"message": "File queued for processing", "taskId": task.id}
+    return {"message": "File queued for processing", "fileName:": taskId}
