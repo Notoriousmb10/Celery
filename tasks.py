@@ -1,18 +1,19 @@
 from celery import Celery
-import time
 import redis
 from PyPDF2 import PdfReader
 import io
+import time
+from datetime import datetime, timezone
 from celery.backends.redis import RedisBackend
 
 redis_client = redis.Redis(host="localhost", port=6379, decode_responses=True)
 
 
-class HsetRedisBackend(RedisBackend):
+class SetRedisBackend(RedisBackend):
     def __init__(self, app, url=None, **kwargs):
         super().__init__(app, url, **kwargs)
 
-    def _store_result(
+    def __store_result(
         self, task_id, result, status, traceback=None, request=None, **kwargs
     ):
         mapping = {
@@ -29,14 +30,13 @@ class HsetRedisBackend(RedisBackend):
 app = Celery(
     "task",
     broker="amqp://guest:guest@localhost:5672//",
-    backend="tasks.HsetRedisBackend",
+    backend="tasks.SetRedisBackend",
 )
 app.conf.result_backend = "redis://localhost:6379/0"
 
 
 @app.task()
 def process_pdf(file, taskId):
-    print(taskId)
     queued_at = redis_client.hget(taskId, "Queued At")
 
     if not queued_at:
@@ -52,12 +52,16 @@ def process_pdf(file, taskId):
     process_end_time = time.time()  # Process End Time
     processing_time = process_end_time - process_start_time
     return {
-        "Queued At": queued_at,
-        "Started At": started_at,
-        "Wait Time": wait_time,
-        "Processing Start Time": process_start_time,
-        "Processing End Time": process_end_time,
+        "Queued At": datetime.fromtimestamp(queued_at, tz=timezone.utc).isoformat(),
+        "Started At": datetime.fromtimestamp(started_at, tz=timezone.utc).isoformat(),
+        "Wait Time": f"{wait_time:.3f} Seconds",
+        "Processing Start Time": datetime.fromtimestamp(
+            process_start_time, tz=timezone.utc
+        ).isoformat(),
+        "Processing End Time": datetime.fromtimestamp(
+            process_end_time, tz=timezone.utc
+        ).isoformat(),
         "Total Pages": total_pages,
-        "Total Processing Time": f"{processing_time:.3f} Seconds",
+        "Total Processing Time In Seconds": f"{processing_time:.3f} Seconds",
         "taskId": taskId,
     }
